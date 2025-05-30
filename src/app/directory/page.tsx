@@ -37,18 +37,22 @@ export default function Directory() {
         return;
       }
 
-      // Build query for filtering by search term if provided
+      // Build full drama query for data fetching
       let dramaQuery = supabase.from("dramas").select("*").order("title");
 
-      if (query) {
-        dramaQuery = dramaQuery.ilike("title", `%${query}%`);
-      }
-
-      // Get total count for pagination with search filter if applicable
-      const { count } = await dramaQuery.select("id", {
+      // Build a separate count query so dramaQuery stays intact
+      let countQuery = supabase.from("dramas").select("id", {
         count: "exact",
         head: true,
       });
+
+      if (query) {
+        dramaQuery = dramaQuery.ilike("title", `%${query}%`);
+        countQuery = countQuery.ilike("title", `%${query}%`);
+      }
+
+      // Get total count
+      const { count } = await countQuery;
 
       setTotalPages(Math.ceil((count || 0) / DRAMAS_PER_PAGE));
 
@@ -103,16 +107,21 @@ export default function Directory() {
       );
 
       // Format dramas for the grid - ensure titles are always displayed
-      const formattedDramas = (dramas || []).map((drama) => ({
-        id: drama.id,
-        title: drama.title,
-        year: drama.year,
-        description: drama.description || "",
-        userStatus: userDramaMap[drama.id] || null,
-        inLibrary: !!userDramaMap[drama.id],
-        tags: tagsByDramaId[drama.id] || [],
-      }));
+      const formattedDramas = (dramas || []).map((drama) => {
+        console.log("Processing drama:", drama);
+        return {
+          id: drama.id,
+          title: drama.title || "Unknown Title", // Ensure title is never empty
+          year: drama.year,
+          description: drama.description || "",
+          userStatus: userDramaMap[drama.id] || null,
+          inLibrary: !!userDramaMap[drama.id],
+          tags: tagsByDramaId[drama.id] || [],
+          posterUrl: drama.poster_url || "",
+        };
+      });
 
+      console.log("Formatted dramas:", formattedDramas);
       setDramas(formattedDramas);
     } catch (error) {
       console.error("Error fetching dramas:", error);
