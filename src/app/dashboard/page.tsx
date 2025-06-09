@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Plus } from "lucide-react";
 import AddDramaDialog from "@/components/add-drama-dialog";
 import { useState, useEffect } from "react";
+import { useToast } from "@/components/ui/toast-provider";
 
 export default function Dashboard() {
   const [dramas, setDramas] = useState([]);
@@ -16,12 +17,11 @@ export default function Dashboard() {
   const [selectedTags, setSelectedTags] = useState([]);
   const [selectedStatus, setSelectedStatus] = useState("all");
   const [isLoading, setIsLoading] = useState(true);
+  const { showToast } = useToast();
   const supabase = createClient();
   const router = useRouter();
 
   const fetchUserDramas = async () => {
-    // Reset dramas to prevent showing stale data
-    setDramas([]);
     setIsLoading(true);
     try {
       const {
@@ -33,65 +33,73 @@ export default function Dashboard() {
         return;
       }
 
-      // Fetch user's dramas with tags
-      const { data: userDramas, error: userDramasError } = await supabase
-        .from("user_dramas")
-        .select(
-          `
-          id,
-          status,
-          drama_id,
-          dramas:drama_id(id, title, year, description)
-        `,
-        )
-        .eq("user_id", user.id);
+      // Run both queries in parallel for better performance
+      const [userDramasResult, dramaTagsResult] = await Promise.all([
+        // Fetch user's dramas with drama details in a single query
+        supabase
+          .from("user_dramas")
+          .select(
+            `
+            id,
+            status,
+            drama_id,
+            drama:drama_id(id, title, year, description, poster_url)
+          `,
+          )
+          .eq("user_id", user.id),
+
+        // Fetch all drama tags in a single query
+        supabase.from("drama_tag_relations").select(`
+            drama_id,
+            tags:tag_id(id, name)
+          `),
+      ]);
+
+      const { data: userDramas, error: userDramasError } = userDramasResult;
+      const { data: dramaTags } = dramaTagsResult;
 
       if (userDramasError) {
         console.error("Error fetching user dramas:", userDramasError);
+        return;
       }
-      console.log("User dramas raw data:", userDramas);
 
-      // Get all drama IDs to fetch their tags
-      const dramaIds =
-        userDramas
-          ?.map((ud) => (ud.dramas ? ud.dramas.id : null))
-          .filter(Boolean) || [];
+      // Group tags by drama ID using a Map for better performance
+      const tagsByDramaId = new Map();
+      (dramaTags || []).forEach((dt) => {
+        if (!tagsByDramaId.has(dt.drama_id)) {
+          tagsByDramaId.set(dt.drama_id, []);
+        }
+        tagsByDramaId.get(dt.drama_id).push(dt.tags);
+      });
 
-      // Fetch tags for all dramas
-      const { data: dramaTags } = await supabase
-        .from("drama_tag_relations")
-        .select(
-          `
-          drama_id,
-          tags:tag_id(id, name)
-        `,
-        )
-        .in("drama_id", dramaIds.length > 0 ? dramaIds : ["no-dramas"]);
-
-      // Group tags by drama ID
-      const tagsByDramaId = (dramaTags || []).reduce(
-        (acc, dt) => {
-          if (!acc[dt.drama_id]) {
-            acc[dt.drama_id] = [];
-          }
-          acc[dt.drama_id].push(dt.tags);
-          return acc;
-        },
-        {} as Record<string, { id: string; name: string }[]>,
-      );
-
-      // Format dramas for the grid
+      // Format dramas for the grid with optimized processing
       const formattedDramas = (userDramas || [])
-        .map((ud) => ({
-          id: ud.dramas?.id,
-          title: ud.dramas?.title,
-          year: ud.dramas?.year,
-          posterUrl: ud.dramas?.poster_url,
-          userStatus: ud.status,
-          inLibrary: true,
-          tags: tagsByDramaId[ud.dramas?.id] || [],
-        }))
-        .filter((drama) => drama.id); // Filter out any dramas with undefined id
+        .map((ud) => {
+          const dramaId = ud.drama?.id;
+          if (!dramaId) return null;
+
+          console.log(
+            `Dashboard - Drama ${ud.drama?.title} - Raw data:`,
+            ud.drama,
+          );
+          console.log(
+            `Dashboard - Drama ${ud.drama?.title} - poster_url:`,
+            ud.drama?.poster_url,
+          );
+
+          return {
+            id: dramaId,
+            title: ud.drama?.title || "Unknown Title",
+            year: ud.drama?.year,
+            posterUrl: `/api/posters?id=${dramaId}`,
+            userStatus: ud.status,
+            inLibrary: true,
+            tags: tagsByDramaId.get(dramaId) || [],
+          };
+        })
+        .filter(Boolean); // Filter out any null entries
+
+      console.log("Dashboard - All formatted dramas:", formattedDramas);
 
       setDramas(formattedDramas);
     } catch (error) {

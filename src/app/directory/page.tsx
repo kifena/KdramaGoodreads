@@ -10,6 +10,7 @@ import { Plus, Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import AddDramaDialog from "@/components/add-drama-dialog";
 import { useState, useEffect } from "react";
+import { useToast } from "@/components/ui/toast-provider";
 
 export default function Directory() {
   const [dramas, setDramas] = useState([]);
@@ -17,6 +18,7 @@ export default function Directory() {
   const [selectedTags, setSelectedTags] = useState([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [isLoading, setIsLoading] = useState(true);
+  const { showToast } = useToast();
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const DRAMAS_PER_PAGE = 8;
@@ -24,8 +26,6 @@ export default function Directory() {
   const router = useRouter();
 
   const fetchAllDramas = async (page = 1, query = "") => {
-    // Reset dramas to prevent showing stale data
-    setDramas([]);
     setIsLoading(true);
     try {
       const {
@@ -37,46 +37,49 @@ export default function Directory() {
         return;
       }
 
-      // Build full drama query for data fetching
-      let dramaQuery = supabase.from("dramas").select("*").order("title");
+      // Run queries in parallel for better performance
+      const [countResult, dramasResult, userDramasResult, dramaTagsResult] =
+        await Promise.all([
+          // Count query
+          supabase
+            .from("dramas")
+            .select("id", { count: "exact", head: true })
+            .ilike(query ? "title" : "", query ? `%${query}%` : ""),
 
-      // Build a separate count query so dramaQuery stays intact
-      let countQuery = supabase.from("dramas").select("id", {
-        count: "exact",
-        head: true,
-      });
+          // Drama query with pagination
+          supabase
+            .from("dramas")
+            .select("*")
+            .order("title")
+            .ilike(query ? "title" : "", query ? `%${query}%` : "")
+            .range(
+              (page - 1) * DRAMAS_PER_PAGE,
+              (page - 1) * DRAMAS_PER_PAGE + DRAMAS_PER_PAGE - 1,
+            ),
 
-      if (query) {
-        dramaQuery = dramaQuery.ilike("title", `%${query}%`);
-        countQuery = countQuery.ilike("title", `%${query}%`);
-      }
+          // User dramas query
+          supabase
+            .from("user_dramas")
+            .select("drama_id, status")
+            .eq("user_id", user.id),
 
-      // Get total count
-      const { count } = await countQuery;
+          // Drama tags query
+          supabase
+            .from("drama_tag_relations")
+            .select(`drama_id, tags:tag_id(id, name)`),
+        ]);
 
-      setTotalPages(Math.ceil((count || 0) / DRAMAS_PER_PAGE));
-
-      // Fetch dramas with pagination
-      const from = (page - 1) * DRAMAS_PER_PAGE;
-      const to = from + DRAMAS_PER_PAGE - 1;
-
-      const { data: dramas, error: dramasError } = await dramaQuery.range(
-        from,
-        to,
-      );
+      const { count } = countResult;
+      const { data: dramas, error: dramasError } = dramasResult;
+      const { data: userDramas } = userDramasResult;
+      const { data: dramaTags } = dramaTagsResult;
 
       if (dramasError) {
         console.error("Error fetching dramas:", dramasError);
         return;
       }
 
-      console.log("Raw dramas data:", dramas);
-
-      // Fetch user's dramas to know which ones are in their library
-      const { data: userDramas } = await supabase
-        .from("user_dramas")
-        .select("drama_id, status")
-        .eq("user_id", user.id);
+      setTotalPages(Math.ceil((count || 0) / DRAMAS_PER_PAGE));
 
       // Create a map of user's dramas for quick lookup
       const userDramaMap = (userDramas || []).reduce(
@@ -86,13 +89,6 @@ export default function Directory() {
         },
         {} as Record<string, string>,
       );
-
-      // Fetch tags for all dramas
-      const { data: dramaTags } = await supabase.from("drama_tag_relations")
-        .select(`
-          drama_id,
-          tags:tag_id(id, name)
-        `);
 
       // Group tags by drama ID
       const tagsByDramaId = (dramaTags || []).reduce(
@@ -108,7 +104,12 @@ export default function Directory() {
 
       // Format dramas for the grid - ensure titles are always displayed
       const formattedDramas = (dramas || []).map((drama) => {
-        console.log("Processing drama:", drama);
+        console.log(`Directory - Drama ${drama.title} - Raw data:`, drama);
+        console.log(
+          `Directory - Drama ${drama.title} - poster_url:`,
+          drama.poster_url,
+        );
+
         return {
           id: drama.id,
           title: drama.title || "Unknown Title", // Ensure title is never empty
@@ -117,11 +118,12 @@ export default function Directory() {
           userStatus: userDramaMap[drama.id] || null,
           inLibrary: !!userDramaMap[drama.id],
           tags: tagsByDramaId[drama.id] || [],
-          posterUrl: drama.poster_url || "",
+          posterUrl: `/api/posters?id=${drama.id}`,
         };
       });
 
-      console.log("Formatted dramas:", formattedDramas);
+      console.log("Directory - All formatted dramas:", formattedDramas);
+
       setDramas(formattedDramas);
     } catch (error) {
       console.error("Error fetching dramas:", error);
@@ -161,23 +163,8 @@ export default function Directory() {
         ),
       );
 
-      // Show toast notification
-      const toast = document.createElement("div");
-      toast.className =
-        "fixed bottom-4 right-4 bg-green-500 text-white px-4 py-2 rounded-md shadow-lg z-50";
-      toast.style.animation = "slideInUp 0.3s ease-out forwards";
-      toast.textContent = "Drama added to your library";
-      document.body.appendChild(toast);
-
-      // Remove toast after 3 seconds
-      setTimeout(() => {
-        toast.style.animation = "slideOutDown 0.3s ease-in forwards";
-        setTimeout(() => {
-          if (document.body.contains(toast)) {
-            document.body.removeChild(toast);
-          }
-        }, 300);
-      }, 3000);
+      // Show toast notification using the ToastProvider
+      showToast("Drama added to your library", "success");
     } catch (error) {
       console.error("Error adding drama to library:", error);
     }

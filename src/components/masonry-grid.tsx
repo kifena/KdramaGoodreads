@@ -49,8 +49,19 @@ export default function MasonryGrid({
     };
 
     updateColumns();
-    window.addEventListener("resize", updateColumns);
-    return () => window.removeEventListener("resize", updateColumns);
+
+    // Use a debounced resize listener for better performance
+    let resizeTimer;
+    const handleResize = () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(updateColumns, 100);
+    };
+
+    window.addEventListener("resize", handleResize);
+    return () => {
+      window.removeEventListener("resize", handleResize);
+      clearTimeout(resizeTimer);
+    };
   }, []);
 
   // Distribute dramas into columns

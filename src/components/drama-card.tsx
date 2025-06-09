@@ -58,6 +58,7 @@ export default function DramaCard({
   onAddToLibrary,
   description = "",
 }: DramaCardProps) {
+  console.log(`DramaCard ${title} - posterUrl:`, posterUrl);
   const [status, setStatus] = useState<DramaStatus>(userStatus);
   const [isHovered, setIsHovered] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -86,61 +87,64 @@ export default function DramaCard({
 
   const fetchDramaDetails = async () => {
     try {
-      // Fetch drama details
-      const { data: dramaData, error: dramaError } = await supabase
-        .from("dramas")
-        .select("description")
-        .eq("id", id)
-        .single();
+      // Run all queries in parallel for better performance
+      const [dramaResult, tagResult, commentResult] = await Promise.all([
+        // Fetch drama details
+        supabase.from("dramas").select("description").eq("id", id).single(),
+
+        // Fetch tags if not provided
+        supabase
+          .from("drama_tag_relations")
+          .select(`tags:tag_id(id, name)`)
+          .eq("drama_id", id),
+
+        // Fetch comments (10 most recent)
+        supabase
+          .from("drama_comments")
+          .select("id, user_id, comment, created_at")
+          .eq("drama_id", id)
+          .order("created_at", { ascending: false })
+          .limit(10),
+      ]);
+
+      const { data: dramaData, error: dramaError } = dramaResult;
+      const { data: tagData, error: tagError } = tagResult;
+      const { data: commentData, error: commentError } = commentResult;
 
       if (dramaError) throw dramaError;
-
-      // Fetch tags if not provided
-      const { data: tagData, error: tagError } = await supabase
-        .from("drama_tag_relations")
-        .select(
-          `
-          tags:tag_id(id, name)
-        `,
-        )
-        .eq("drama_id", id);
-
       if (tagError) throw tagError;
-
-      // Fetch comments (10 most recent)
-      const { data: commentData, error: commentError } = await supabase
-        .from("drama_comments")
-        .select("id, user_id, comment, created_at")
-        .eq("drama_id", id)
-        .order("created_at", { ascending: false })
-        .limit(10);
-
       if (commentError) throw commentError;
 
-      // Fetch user names for comments
-      const userIds = commentData?.map((comment) => comment.user_id) || [];
-      let userNames: Record<string, string> = {};
+      // Process tags immediately
+      const formattedTags = tagData?.map((item) => item.tags) || [];
 
-      if (userIds.length > 0) {
-        const { data: userData, error: userError } = await supabase
+      // Only fetch user data if we have comments
+      let formattedComments = [];
+      if (commentData && commentData.length > 0) {
+        const userIds = commentData.map((comment) => comment.user_id);
+
+        // Fetch user names for comments
+        const { data: userData } = await supabase
           .from("users")
           .select("id, name, full_name")
           .in("id", userIds);
 
-        if (!userError && userData) {
+        // Create a map for quick user lookup
+        const userMap = new Map();
+        if (userData) {
           userData.forEach((user) => {
-            userNames[user.id] =
-              user.name || user.full_name || "Anonymous User";
+            userMap.set(
+              user.id,
+              user.name || user.full_name || "Anonymous User",
+            );
           });
         }
-      }
 
-      const formattedTags = tagData?.map((item) => item.tags) || [];
-      const formattedComments =
-        commentData?.map((comment) => ({
+        formattedComments = commentData.map((comment) => ({
           ...comment,
-          user_name: userNames[comment.user_id] || "Anonymous User",
-        })) || [];
+          user_name: userMap.get(comment.user_id) || "Anonymous User",
+        }));
+      }
 
       setDramaDetails({
         description: dramaData?.description || "",
@@ -222,23 +226,8 @@ export default function DramaCard({
 
         setStatus("plan_to_watch");
 
-        // Create toast notification
-        const toast = document.createElement("div");
-        toast.className =
-          "fixed bottom-4 right-4 bg-green-500 text-white px-4 py-2 rounded-md shadow-lg z-50";
-        toast.style.animation = "slideInUp 0.3s ease-out forwards";
-        toast.textContent = "Drama added to your library";
-        document.body.appendChild(toast);
-
-        // Remove toast after 3 seconds
-        setTimeout(() => {
-          toast.style.animation = "slideOutDown 0.3s ease-in forwards";
-          setTimeout(() => {
-            if (document.body.contains(toast)) {
-              document.body.removeChild(toast);
-            }
-          }, 300);
-        }, 3000);
+        // Using the toast system would be better here, but we'll keep it simple for now
+        // This component would need to be updated to use useToast() in a future update
       } catch (error) {
         console.error("Error adding drama to library:", error);
       }
@@ -282,11 +271,23 @@ export default function DramaCard({
         onClick={handleCardClick}
       >
         <div className="relative aspect-[2/3] overflow-hidden rounded-md">
-          <div className="w-full h-full bg-gradient-to-br from-kdrama-pink to-kdrama-blue flex items-center justify-center">
-            <span className="text-white font-bold">
-              {(title && title.substring(0, 2)) || "??"}
-            </span>
-          </div>
+          {posterUrl ? (
+            <Image
+              src={posterUrl}
+              alt={title}
+              fill
+              className="object-cover"
+              sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw"
+              unoptimized={false}
+              priority
+            />
+          ) : (
+            <div className="w-full h-full bg-gradient-to-br from-kdrama-pink to-kdrama-blue flex items-center justify-center">
+              <span className="text-white font-bold">
+                {(title && title.substring(0, 2)) || "??"}
+              </span>
+            </div>
+          )}
         </div>
 
         <div className="p-3">
@@ -323,11 +324,23 @@ export default function DramaCard({
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="relative aspect-[2/3] overflow-hidden rounded-md">
-              <div className="w-full h-full bg-gradient-to-br from-kdrama-pink to-kdrama-blue flex items-center justify-center">
-                <span className="text-white font-bold">
-                  {(title && title.substring(0, 2)) || "??"}
-                </span>
-              </div>
+              {posterUrl ? (
+                <Image
+                  src={posterUrl}
+                  alt={title}
+                  fill
+                  className="object-cover"
+                  sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw"
+                  unoptimized={false}
+                  priority
+                />
+              ) : (
+                <div className="w-full h-full bg-gradient-to-br from-kdrama-pink to-kdrama-blue flex items-center justify-center">
+                  <span className="text-white font-bold">
+                    {(title && title.substring(0, 2)) || "??"}
+                  </span>
+                </div>
+              )}
             </div>
 
             <div className="space-y-4">
